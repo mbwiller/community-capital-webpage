@@ -1,0 +1,155 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: community-capital-db
+    environment:
+      POSTGRES_DB: community_capital
+      POSTGRES_USER: ccadmin
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - community-capital-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ccadmin -d community_capital"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: community-capital-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - community-capital-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: community-capital-backend
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgresql://ccadmin:${DB_PASSWORD:-changeme}@postgres:5432/community_capital
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev-secret}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY}
+      PLAID_CLIENT_ID: ${PLAID_CLIENT_ID}
+      PLAID_SECRET: ${PLAID_SECRET}
+      PLAID_ENV: ${PLAID_ENV:-sandbox}
+      PLAID_REDIRECT_URI: ${PLAID_REDIRECT_URI}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION:-us-west-2}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET}
+      AI_SERVICE_URL: http://ai-service:5000
+      ENABLE_STRIPE: ${ENABLE_STRIPE:-false}
+      STRIPE_ISSUING_ENABLED: ${STRIPE_ISSUING_ENABLED:-false}
+      DISABLE_QUEUE_PROCESSORS: ${DISABLE_QUEUE_PROCESSORS:-true}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
+      RUN_SEEDS: ${RUN_SEEDS:-true}
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - community-capital-network
+    restart: unless-stopped
+
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: community-capital-ai
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GOOGLE_VISION_API_KEY: ${GOOGLE_VISION_API_KEY}
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://ccadmin:${DB_PASSWORD:-changeme}@postgres:5432/community_capital
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION:-us-west-2}
+    ports:
+      - "5000:5000"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - community-capital-network
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    container_name: community-capital-nginx
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./frontend:/usr/share/nginx/html:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+    networks:
+      - community-capital-network
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    container_name: community-capital-worker
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://ccadmin:${DB_PASSWORD:-changeme}@postgres:5432/community_capital
+      REDIS_URL: redis://redis:6379
+      ENABLE_STRIPE: ${ENABLE_STRIPE:-false}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - community-capital-network
+    restart: unless-stopped
+
+networks:
+  community-capital-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+
+
